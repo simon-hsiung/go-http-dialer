@@ -7,6 +7,7 @@ package http_dialer
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -85,19 +86,25 @@ func (t *HttpTunnel) parseProxyUrl(proxyUrl *url.URL) {
 	}
 }
 
-func (t *HttpTunnel) dialProxy() (net.Conn, error) {
+func (t *HttpTunnel) dialProxy(ctx context.Context) (net.Conn, error) {
 	if !t.isTls {
-		return t.parentDialer.Dial("tcp", t.proxyAddr)
+		return t.parentDialer.DialContext(ctx, "tcp", t.proxyAddr)
 	}
-	return tls.DialWithDialer(t.parentDialer, "tcp", t.proxyAddr, t.tlsConfig)
+	dialer := tls.Dialer{NetDialer: t.parentDialer, Config: t.tlsConfig}
+	return dialer.DialContext(ctx, "tcp", t.proxyAddr)
 }
 
 // Dial is an implementation of net.Dialer, and returns a TCP connection handle to the host that HTTP CONNECT reached.
 func (t *HttpTunnel) Dial(network string, address string) (net.Conn, error) {
+	return t.DialContext(context.Background(), network, address)
+}
+
+// DialContext is an implementation of net.DialContext, and returns a TCP connection handle to the host that HTTP CONNECT reached.
+func (t *HttpTunnel) DialContext(ctx context.Context, network string, address string) (net.Conn, error) {
 	if network != "tcp" {
 		return nil, fmt.Errorf("network type '%v' unsupported (only 'tcp')", network)
 	}
-	conn, err := t.dialProxy()
+	conn, err := t.dialProxy(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("http_tunnel: failed dialing to proxy: %v", err)
 	}
@@ -108,7 +115,7 @@ func (t *HttpTunnel) Dial(network string, address string) (net.Conn, error) {
 		Header: make(http.Header),
 	}
 	if t.auth != nil && t.auth.InitialResponse() != "" {
-		req.Header.Set(hdrProxyAuthResp, t.auth.Type() + " " + t.auth.InitialResponse())
+		req.Header.Set(hdrProxyAuthResp, t.auth.Type()+" "+t.auth.InitialResponse())
 	}
 	resp, err := t.doRoundtrip(conn, req)
 	if err != nil {
@@ -122,7 +129,7 @@ func (t *HttpTunnel) Dial(network string, address string) (net.Conn, error) {
 			conn.Close()
 			return nil, err
 		}
-		req.Header.Set(hdrProxyAuthResp, t.auth.Type() + " " + responseHdr)
+		req.Header.Set(hdrProxyAuthResp, t.auth.Type()+" "+responseHdr)
 		resp, err = t.doRoundtrip(conn, req)
 		if err != nil {
 			conn.Close()
@@ -149,7 +156,7 @@ func (t *HttpTunnel) doRoundtrip(conn net.Conn, req *http.Request) (*http.Respon
 
 func (t *HttpTunnel) performAuthChallengeResponse(resp *http.Response) (string, error) {
 	respAuthHdr := resp.Header.Get(hdrProxyAuthReq)
-	if !strings.Contains(respAuthHdr, t.auth.Type() + " ") {
+	if !strings.Contains(respAuthHdr, t.auth.Type()+" ") {
 		return "", fmt.Errorf("http_tunnel: expected '%v' Proxy authentication, got: '%v'", t.auth.Type(), respAuthHdr)
 	}
 	splits := strings.SplitN(respAuthHdr, " ", 2)
